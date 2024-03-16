@@ -4,198 +4,201 @@
 // http://github.com/mitcho/lingcrawl
 
 // option parsing using yargs:
-var argv = require('yargs')
-	.usage('Usage: $0 (<start ID>) (<end ID>) [options]')
-	.demand(0) // require an ID
-	.option('c', {
-		alias: 'concurrent',
-		default: 10
-	})
-	.option('v', {
-		alias: 'verbose',
-		default: false,
-		boolean: true
-	})
-	.option('u', {
-		alias: 'useindex',
-		default: false,
-		boolean: true,
-		describe: 'Use cached index.html files'
-	})
-	.option('F', {
-		alias: 'forceall',
-		default: false,
-		boolean: true,
-		describe: 'Ignore all cached files'
-	})
-	.option('q', {
-		alias: 'quiet',
-		default: false,
-		boolean: true
-	})
-	.help('help')
-	.argv;
+var argv = require("yargs")
+  .usage("Usage: $0 (<start ID>) (<end ID>) [options]")
+  .demand(0) // require an ID
+  .option("c", {
+    alias: "concurrent",
+    default: 10,
+  })
+  .option("v", {
+    alias: "verbose",
+    default: false,
+    boolean: true,
+  })
+  .option("u", {
+    alias: "useindex",
+    default: false,
+    boolean: true,
+    describe: "Use cached index.html files",
+  })
+  .option("F", {
+    alias: "forceall",
+    default: false,
+    boolean: true,
+    describe: "Ignore all cached files",
+  })
+  .option("q", {
+    alias: "quiet",
+    default: false,
+    boolean: true,
+  })
+  .help("help").argv;
 
 var fs = require("fs"),
-	exec = require('child_process').exec,
-	execSync = require('child_process').execSync,
-	cheerio = require('cheerio'),
-	path = require('path'),
-	async = require('async');
+  exec = require("child_process").exec,
+  execSync = require("child_process").execSync,
+  cheerio = require("cheerio"),
+  path = require("path"),
+  async = require("async");
 
-const LINGBUZZ = 'https://ling.auf.net/lingbuzz',
-	HEADERS = {'User-Agent': 'lingcrawl'},
-	ARCHIVEPATH = './archive/',
-	CLEANHTML = "sed -i '' -E -e 's/\\?_s=[A-Za-z0-9_-]+(&amp;_k=[A-Za-z0-9_-]+&amp;[0-9])?\\\"/\\\"/g' ";
+const LINGBUZZ = "https://ling.auf.net/lingbuzz",
+  HEADERS = { "User-Agent": "lingcrawl" },
+  ARCHIVEPATH = "./archive/",
+  CLEANHTML =
+    "sed -i '' -E -e 's/\\?_s=[A-Za-z0-9_-]+(&amp;_k=[A-Za-z0-9_-]+&amp;[0-9])?\\\"/\\\"/g' ";
 
 var start = argv._[0] || 1;
-var end = (argv._.length > 1) ? argv._[1] : start;
+var end = argv._.length > 1 ? argv._[1] : start;
 
 // if no settings were given, find the latest NEW entry:
 if (argv._.length == 0) {
-	
-	let targetpath = LINGBUZZ + '/lingbuzz'; // index file is /lingbuzz, apparently
-	
-	if (!argv.q)
-		console.log('🐌  ' + targetpath + ' ...');
+  let targetpath = LINGBUZZ + "/lingbuzz"; // index file is /lingbuzz, apparently
 
-	var child = execSync('wget -q -N -P /tmp -w 1m --random-wait ' + targetpath);
+  if (!argv.q) console.log("🐌  " + targetpath + " ...");
 
-	let file = fs.readFileSync('/tmp/lingbuzz');
-	let match = String(file).match('<b>new<\/b>&nbsp;<\/td><td><a href="\/lingbuzz\/(\\d+)\/current\.');
+  var child = execSync("wget -q -N -P /tmp -w 1m --random-wait " + targetpath);
 
-	if (match) {
-		end = parseInt(match[1]);
-		if (!argv.q)
-			console.log('✅  index new: ' + end);
-	} else {
-		console.error('🚫  found no end number');
-	}
+  let file = fs.readFileSync("/tmp/lingbuzz");
+  let match = String(file).match(
+    '<b>new</b>&nbsp;</td><td><a href="/lingbuzz/(\\d+)/current.'
+  );
+
+  if (match) {
+    end = parseInt(match[1]);
+    if (!argv.q) console.log("✅  index new: " + end);
+  } else {
+    console.error("🚫  found no end number");
+  }
 }
 
 function pad(n, digits) {
-	n += '';
-	return new Array(digits - n.length + 1).join('0') + n;
+  n += "";
+  return new Array(digits - n.length + 1).join("0") + n;
 }
 
 var q = async.queue(function (task, callback) {
-	var id = task.id;
-	id = pad(id, 6);
-	var targetpath = LINGBUZZ + '/' + id + '/';
-	var archivedir = ARCHIVEPATH + id + '/';
+  var id = task.id;
+  id = pad(id, 6);
+  var targetpath = LINGBUZZ + "/" + id + "/";
+  var archivedir = ARCHIVEPATH + id + "/";
 
-	if ( !fs.existsSync(archivedir) )
-		fs.mkdirSync(archivedir);	
+  if (!fs.existsSync(archivedir)) fs.mkdirSync(archivedir);
 
-	var filename = task.filename; // filename = current.pdf | index.html | etc. (optional ?_s=)
+  var filename = task.filename; // filename = current.pdf | index.html | etc. (optional ?_s=)
 
-	if (argv.v && !argv.q)
-		console.log(id, filename);
-	
-	targetpath += filename;
+  if (argv.v && !argv.q) console.log(id, filename);
 
-	var cb;
-	if ( filename == 'index.html' ) {
-		cb = function () {
-			// load cheerio, the faux-jQuery
-			var $ = cheerio.load(fs.readFileSync(archivedir + filename));
+  targetpath += filename;
 
-			// used to be 'table tr:nth-child(1) > td:nth-child(2) a'
-			// but this got stuck on 1454, starting 20160716
-			var a = $('tr').first().find('td a');
-			
-			if (a.length > 1) {
-				if (!argv.q)
-					console.log('⚠️  Matched more than one "tr:first td a"');
-				// todo: why doesn't this work?
-				if (a.find('[href*=".pdf"]').length > 1) {
-					if (!argv.q)
-						console.log('  Limiting to "tr:first td a" with .pdf');
-					a = a.find('[href*=".pdf"]');
-				}
-			}
+  var cb;
+  if (filename == "index.html") {
+    cb = function () {
+      // load cheerio, the faux-jQuery
+      var $ = cheerio.load(fs.readFileSync(archivedir + filename));
 
-			if (a.length == 0) {
-				if (argv.q)
-					console.log('🚫  Found no "tr:first td a" in ' + id + '!!');
-				else
-					console.log('🚫  Found no "tr:first td a"!!');
-				return process.nextTick(callback);
-			}
-			
-			var current = a.attr('href');
-			var currentfile = path.basename(current);
-			var currentext = path.extname(current).replace(/\?.*$/,'');
-			var previousList = $('table tr:nth-child(5) > td:nth-child(2) a');
-			var maxrev = 0;
-			previousList.each(function(i, previous){
-				var link = $(previous).attr('href');
-				var revfile = link.replace(/^\/lingbuzz\/(\d+)\/(v\d+\.\w+)(\?.*)?$/, '$2');
-				var revnum = parseInt(revfile.replace(/^v(\d+)\.\w+$/, '$1'));
-				q.push({id: id, filename: revfile, try: 1});
-		
-				maxrev = Math.max(maxrev, revnum);
-			});
+      // used to be 'table tr:nth-child(1) > td:nth-child(2) a'
+      // but this got stuck on 1454, starting 20160716
+      var a = $("tr").first().find("td a");
 
-			maxrev++;
-			var currentfile = 'v' + maxrev + currentext;
-		// 	console.log('current = ' + currentfile);
+      if (a.length > 1) {
+        if (!argv.q) console.log('⚠️  Matched more than one "tr:first td a"');
+        // todo: why doesn't this work?
+        if (a.find('[href*=".pdf"]').length > 1) {
+          if (!argv.q) console.log('  Limiting to "tr:first td a" with .pdf');
+          a = a.find('[href*=".pdf"]');
+        }
+      }
 
-			q.push({id: id, filename: currentfile, try: 1});
-			process.nextTick(callback);
-		}
-	} else {
-		cb = function() {process.nextTick(callback);};
-	}
+      if (a.length == 0) {
+        if (argv.q) console.log('🚫  Found no "tr:first td a" in ' + id + "!!");
+        else console.log('🚫  Found no "tr:first td a"!!');
+        return process.nextTick(callback);
+      }
 
-	// don't redownload existing files
-	// todo: skip this for updated files? The issue is that lingbuzz doesn't seem to send back Last-Modified, so we can't do this intelligently.
-	if ( !argv.F && !(!argv.u && filename == 'index.html') && fs.existsSync(archivedir + filename) ) {
-		return cb( id, filename, archivedir + filename );
-	}
+      var current = a.attr("href");
+      var currentfile = path.basename(current);
+      var currentext = path.extname(current).replace(/\?.*$/, "");
+      var previousList = $("table tr:nth-child(5) > td:nth-child(2) a");
+      var maxrev = 0;
+      previousList.each(function (i, previous) {
+        var link = $(previous).attr("href");
+        var revfile = link.replace(
+          /^\/lingbuzz\/(\d+)\/(v\d+\.\w+)(\?.*)?$/,
+          "$2"
+        );
+        var revnum = parseInt(revfile.replace(/^v(\d+)\.\w+$/, "$1"));
+        q.push({ id: id, filename: revfile, try: 1 });
 
-	if (!argv.q)
-		console.log('🐌  ' + targetpath + ' ...');
+        maxrev = Math.max(maxrev, revnum);
+      });
 
-	var child = exec('wget -N -P ' + archivedir + ' -w 1m --random-wait ' + targetpath, function(err, stdout, stderr) {
-		if (err) {
-			if ( err.code == 8 ) { // wget exit code 8 = server error
-				if ( task.try >= 5 ) {
-					if (!argv.q)
-						console.log('🚫  ' + id + ' ' + filename + "\tgiving up after 5 tries");
-				} else {
-					if (!argv.q)
-						console.log('🚫  ' + id + ' ' + filename + "\trequeuing...");
-					q.push({id: id, filename: filename, try: task.try + 1});
-				}
-			} else
-				console.log(err);
-			return process.nextTick(callback);
-		}
+      maxrev++;
+      var currentfile = "v" + maxrev + currentext;
+      // 	console.log('current = ' + currentfile);
 
-		if (!argv.q)
-			console.log('✅  ' + id + ' ' + filename);
+      q.push({ id: id, filename: currentfile, try: 1 });
+      process.nextTick(callback);
+    };
+  } else {
+    cb = function () {
+      process.nextTick(callback);
+    };
+  }
 
-		if ( filename == 'index.html' ) { // index.html files need to be cleaned up
-			exec(CLEANHTML + archivedir + filename, function(err, stdout, stderr) {
-				if (err && !argv.q)
-					console.log('⚠️  ' + id + ' on sed: ', err);
-				cb( id, filename );
-			});
-		} else {
-			cb( id, filename );
-		}
-	});
+  // don't redownload existing files
+  // todo: skip this for updated files? The issue is that lingbuzz doesn't seem to send back Last-Modified, so we can't do this intelligently.
+  if (
+    !argv.F &&
+    !(!argv.u && filename == "index.html") &&
+    fs.existsSync(archivedir + filename)
+  ) {
+    return cb(id, filename, archivedir + filename);
+  }
 
+  if (!argv.q) console.log("🐌  " + targetpath + " ...");
+
+  var child = exec(
+    "wget -N -P " + archivedir + " -w 1m --random-wait " + targetpath,
+    function (err, stdout, stderr) {
+      if (err) {
+        if (err.code == 8) {
+          // wget exit code 8 = server error
+          if (task.try >= 5) {
+            if (!argv.q)
+              console.log(
+                "🚫  " + id + " " + filename + "\tgiving up after 5 tries"
+              );
+          } else {
+            if (!argv.q)
+              console.log("🚫  " + id + " " + filename + "\trequeuing...");
+            q.push({ id: id, filename: filename, try: task.try + 1 });
+          }
+        } else console.log(err);
+        return process.nextTick(callback);
+      }
+
+      if (!argv.q) console.log("✅  " + id + " " + filename);
+
+      if (filename == "index.html") {
+        // index.html files need to be cleaned up
+        exec(CLEANHTML + archivedir + filename, function (err, stdout, stderr) {
+          if (err && !argv.q) console.log("⚠️  " + id + " on sed: ", err);
+          cb(id, filename);
+        });
+      } else {
+        cb(id, filename);
+      }
+    }
+  );
 }, argv.c);
 
 // register final callback
-q.drain = function() {
-	if (!argv.q)
-		console.log('all items have been processed');
-}
+q.drain = function () {
+  if (!argv.q) console.log("all items have been processed");
+};
 
 // queue up IDs
-for ( var i = start; i <= end; i++ ) {
-	q.push({id: i, filename: 'index.html'});
+for (var i = start; i <= end; i++) {
+  q.push({ id: i, filename: "index.html" });
 }
